@@ -11,10 +11,8 @@ import io.settlementhub.common.config.AppProperties;
 import io.settlementhub.common.error.ApiException;
 import io.settlementhub.common.error.ErrorCode;
 import io.settlementhub.common.web.PageResponse;
+import io.settlementhub.merchant.MerchantAccess;
 import io.settlementhub.merchant.MerchantRepository;
-import io.settlementhub.security.CurrentUser;
-import io.settlementhub.security.CurrentUserProvider;
-import io.settlementhub.security.Role;
 import io.settlementhub.transaction.dto.CreateTransactionRequest;
 import io.settlementhub.transaction.dto.TransactionResponse;
 import java.time.Instant;
@@ -37,7 +35,7 @@ class TransactionServiceTest {
 
     @Mock private TransactionRepository transactionRepository;
     @Mock private MerchantRepository merchantRepository;
-    @Mock private CurrentUserProvider currentUserProvider;
+    @Mock private MerchantAccess merchantAccess;
 
     private TransactionService transactionService;
 
@@ -51,7 +49,7 @@ class TransactionServiceTest {
                         new AppProperties.Settlement(4, 8, 100));
         transactionService =
                 new TransactionService(
-                        transactionRepository, merchantRepository, currentUserProvider, properties);
+                        transactionRepository, merchantRepository, merchantAccess, properties);
     }
 
     @Test
@@ -126,28 +124,31 @@ class TransactionServiceTest {
     }
 
     @Test
-    void scopesMerchantListingToOwnMerchantWhenFilterIsOmitted() {
+    void listsTransactionsForRequestedMerchant() {
         UUID merchantId = UUID.randomUUID();
-        when(currentUserProvider.require())
-                .thenReturn(new CurrentUser("merchant-user", Role.MERCHANT, merchantId));
+        when(merchantAccess.resolveTransactionFilter(merchantId)).thenReturn(merchantId);
         when(transactionRepository.findAll(any(Specification.class), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of()));
 
         PageResponse<TransactionResponse> response =
-                transactionService.list(null, null, null, 0, 20);
+                transactionService.list(merchantId, null, null, 0, 20);
 
         assertThat(response.items()).isEmpty();
         ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
         verify(transactionRepository).findAll(any(Specification.class), pageableCaptor.capture());
         assertThat(pageableCaptor.getValue().getPageSize()).isEqualTo(20);
+        verify(merchantAccess).resolveTransactionFilter(merchantId);
     }
 
     @Test
     void forbidsMerchantFromListingAnotherMerchantsTransactions() {
-        when(currentUserProvider.require())
-                .thenReturn(new CurrentUser("merchant-user", Role.MERCHANT, UUID.randomUUID()));
+        UUID requestedMerchantId = UUID.randomUUID();
+        when(merchantAccess.resolveTransactionFilter(requestedMerchantId))
+                .thenThrow(
+                        new ApiException(
+                                ErrorCode.FORBIDDEN, "You do not have access to this merchant."));
 
-        assertThatThrownBy(() -> transactionService.list(UUID.randomUUID(), null, null, 0, 20))
+        assertThatThrownBy(() -> transactionService.list(requestedMerchantId, null, null, 0, 20))
                 .isInstanceOfSatisfying(
                         ApiException.class,
                         exception ->
@@ -160,7 +161,7 @@ class TransactionServiceTest {
     @Test
     void allowsAdminToFilterByMerchant() {
         UUID merchantId = UUID.randomUUID();
-        when(currentUserProvider.require()).thenReturn(new CurrentUser("admin", Role.ADMIN, null));
+        when(merchantAccess.resolveTransactionFilter(merchantId)).thenReturn(merchantId);
         when(transactionRepository.findAll(any(Specification.class), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of()));
 

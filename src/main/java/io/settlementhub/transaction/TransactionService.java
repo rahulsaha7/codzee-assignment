@@ -5,9 +5,8 @@ import io.settlementhub.common.error.ApiException;
 import io.settlementhub.common.error.ErrorCode;
 import io.settlementhub.common.web.PageResponse;
 import io.settlementhub.common.web.Pagination;
+import io.settlementhub.merchant.MerchantAccess;
 import io.settlementhub.merchant.MerchantRepository;
-import io.settlementhub.security.CurrentUser;
-import io.settlementhub.security.CurrentUserProvider;
 import io.settlementhub.transaction.dto.CreateTransactionRequest;
 import io.settlementhub.transaction.dto.TransactionResponse;
 import io.settlementhub.transaction.mapper.TransactionMapper;
@@ -29,17 +28,17 @@ public class TransactionService {
 
     private final TransactionRepository transactionRepository;
     private final MerchantRepository merchantRepository;
-    private final CurrentUserProvider currentUserProvider;
+    private final MerchantAccess merchantAccess;
     private final int maxPageSize;
 
     public TransactionService(
             TransactionRepository transactionRepository,
             MerchantRepository merchantRepository,
-            CurrentUserProvider currentUserProvider,
+            MerchantAccess merchantAccess,
             AppProperties appProperties) {
         this.transactionRepository = transactionRepository;
         this.merchantRepository = merchantRepository;
-        this.currentUserProvider = currentUserProvider;
+        this.merchantAccess = merchantAccess;
         this.maxPageSize = appProperties.pagination().maxPageSize();
     }
 
@@ -76,8 +75,7 @@ public class TransactionService {
         if (from != null && to != null && from.isAfter(to)) {
             throw new ApiException(ErrorCode.BAD_REQUEST, "from must be before or equal to to");
         }
-        CurrentUser currentUser = currentUserProvider.require();
-        UUID effectiveMerchantId = resolveMerchantFilter(currentUser, merchantId);
+        UUID effectiveMerchantId = merchantAccess.resolveTransactionFilter(merchantId);
         Pageable pageable =
                 Pagination.of(
                         page,
@@ -103,19 +101,5 @@ public class TransactionService {
             }
             return criteriaBuilder.and(predicates.toArray(Predicate[]::new));
         };
-    }
-
-    private UUID resolveMerchantFilter(CurrentUser currentUser, UUID requestedMerchantId) {
-        if (!currentUser.isMerchant()) {
-            return requestedMerchantId;
-        }
-        if (currentUser.merchantId() == null) {
-            throw new ApiException(
-                    ErrorCode.FORBIDDEN, "This account is not linked to a merchant.");
-        }
-        if (requestedMerchantId != null && !requestedMerchantId.equals(currentUser.merchantId())) {
-            throw new ApiException(ErrorCode.FORBIDDEN, "You do not have access to this merchant.");
-        }
-        return currentUser.merchantId();
     }
 }
