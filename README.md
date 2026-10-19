@@ -10,17 +10,20 @@ authentication and role-based access control.
 ## Features
 
 - Merchant onboarding and lifecycle management (`PENDING`, `ACTIVE`, `SUSPENDED`)
+- Case-insensitive merchant search by legal name or business email, with status and pagination
+  filters
 - Transaction capture with idempotency on `(merchantId, externalRef)`
 - Asynchronous daily settlement with idempotency keys, per-merchant failure isolation and
   progress tracking
+- Merchant portal summary with captured and settled transaction counts
+- Audit trail for merchant creation and status changes
 - Stateless JWT authentication with `ADMIN`, `OPS` and `MERCHANT` roles
 - PostgreSQL schema managed by Flyway
 - RFC 7807 problem responses, correlation ids and structured validation errors
 - OpenAPI documentation and Swagger UI
 - Actuator health probes, JaCoCo coverage and GitHub Actions CI
 
-Bulk CSV onboarding, streamed reports and the audit log are delivered in follow-up pull
-requests.
+Bulk CSV onboarding and streamed reports are delivered in follow-up pull requests.
 
 ## Tech stack
 
@@ -41,6 +44,7 @@ requests.
 ```
 src/main/java/io/settlementhub
 ├── common
+│   ├── audit        AuditLog, AuditService
 │   ├── config       AppProperties, JacksonConfig, OpenApiConfig
 │   ├── error        ApiException, ErrorCode, GlobalExceptionHandler
 │   ├── logging      CorrelationIdFilter
@@ -49,7 +53,7 @@ src/main/java/io/settlementhub
 ├── security
 │   ├── CurrentUser, CurrentUserProvider, JwtService, JwtAuthFilter, SecurityConfig
 │   └── user         UserAccount, AuthService, AuthController, admin bootstrap
-├── merchant         Merchant entity, repository, service, controller, DTOs, mapper
+├── merchant         Merchant entity, search repository, access helper, service, controller
 ├── transaction      Transaction entity, repository, service, controller, DTOs, mapper
 ├── settlement       Batch/settlement entities, service, async worker, controller
 └── dev              Demo data seeder (dev profile only)
@@ -150,6 +154,21 @@ curl -s -X POST http://localhost:8083/api/v1/merchants \
         "mdrBps": 150,
         "bankAccountRef": "BANK-EXAMPLE-01"
       }'
+```
+
+Search merchants by legal name or business email (both filters are optional):
+
+```bash
+curl -s "http://localhost:8083/api/v1/merchants?q=example&status=ACTIVE&page=0&size=20" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Read the current merchant profile and transaction counts (requires a `MERCHANT` token linked to
+a merchant):
+
+```bash
+curl -s http://localhost:8083/api/v1/merchants/me/summary \
+  -H "Authorization: Bearer $MERCHANT_TOKEN"
 ```
 
 Capture a transaction:
