@@ -1,0 +1,46 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: settlement-hub-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-settlement_hub}
+      POSTGRES_USER: ${POSTGRES_USER:-settlement}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-settlement}
+    ports:
+      - "5433:5432"
+    volumes:
+      - settlement-hub-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-settlement} -d ${POSTGRES_DB:-settlement_hub}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: settlement-hub-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-settlement_hub}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-settlement}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-settlement}
+      APP_JWT_SECRET: ${APP_JWT_SECRET:?APP_JWT_SECRET must be set, see .env.example}
+      APP_ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:?APP_ADMIN_PASSWORD must be set, see .env.example}
+      SERVER_PORT: 8083
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8083/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  settlement-hub-pgdata:

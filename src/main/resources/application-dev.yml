@@ -1,0 +1,11 @@
+spring:
+  jpa:
+    show-sql: false
+
+app:
+  jwt:
+    secret: ${APP_JWT_SECRET:dev-only-jwt-secret-change-me-at-least-32-bytes}
+
+logging:
+  level:
+    io.settlementhub: DEBUG
