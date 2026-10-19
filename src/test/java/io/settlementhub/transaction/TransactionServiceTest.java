@@ -47,7 +47,8 @@ class TransactionServiceTest {
                 new AppProperties(
                         new AppProperties.Jwt("test-secret", 3600),
                         new AppProperties.Admin("admin", "password"),
-                        new AppProperties.Pagination(100));
+                        new AppProperties.Pagination(100),
+                        new AppProperties.Settlement(4, 8, 100));
         transactionService =
                 new TransactionService(
                         transactionRepository, merchantRepository, currentUserProvider, properties);

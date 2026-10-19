@@ -63,6 +63,11 @@ public class Transaction {
         this.settlementId = settlementId;
     }
 
+    public void markSettled(UUID settlementId) {
+        this.status = TransactionStatus.SETTLED;
+        this.settlementId = settlementId;
+    }
+
     public UUID getId() {
         return id;
     }

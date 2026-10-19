@@ -11,14 +11,16 @@ authentication and role-based access control.
 
 - Merchant onboarding and lifecycle management (`PENDING`, `ACTIVE`, `SUSPENDED`)
 - Transaction capture with idempotency on `(merchantId, externalRef)`
+- Asynchronous daily settlement with idempotency keys, per-merchant failure isolation and
+  progress tracking
 - Stateless JWT authentication with `ADMIN`, `OPS` and `MERCHANT` roles
 - PostgreSQL schema managed by Flyway
 - RFC 7807 problem responses, correlation ids and structured validation errors
 - OpenAPI documentation and Swagger UI
 - Actuator health probes, JaCoCo coverage and GitHub Actions CI
 
-The asynchronous settlement engine, bulk CSV onboarding, streamed reports and audit log are
-delivered in follow-up pull requests.
+Bulk CSV onboarding, streamed reports and the audit log are delivered in follow-up pull
+requests.
 
 ## Tech stack
 
@@ -49,6 +51,7 @@ src/main/java/io/settlementhub
 │   └── user         UserAccount, AuthService, AuthController, admin bootstrap
 ├── merchant         Merchant entity, repository, service, controller, DTOs, mapper
 ├── transaction      Transaction entity, repository, service, controller, DTOs, mapper
+├── settlement       Batch/settlement entities, service, async worker, controller
 └── dev              Demo data seeder (dev profile only)
 ```
 
@@ -76,6 +79,9 @@ All tunables are bound to `AppProperties` (`app.*`).
 | `SPRING_DATASOURCE_URL` | no | JDBC URL, defaults to `jdbc:postgresql://localhost:5433/settlement_hub` |
 | `SPRING_DATASOURCE_USERNAME` | no | Database user, defaults to `settlement` |
 | `SPRING_DATASOURCE_PASSWORD` | no | Database password, defaults to `settlement` |
+| `APP_SETTLEMENT_CORE_POOL_SIZE` | no | Settlement executor core threads, defaults to 4 |
+| `APP_SETTLEMENT_MAX_POOL_SIZE` | no | Settlement executor max threads, defaults to 8 |
+| `APP_SETTLEMENT_QUEUE_CAPACITY` | no | Settlement executor queue size, defaults to 100 |
 | `SERVER_PORT` | no | HTTP port, defaults to `8083` |
 
 The admin account is created by a `CommandLineRunner` from `APP_ADMIN_PASSWORD`; the password
@@ -166,6 +172,30 @@ List transactions:
 curl -s "http://localhost:8083/api/v1/transactions?page=0&size=20" \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+Start a settlement run for a business date (safe to retry with the same `Idempotency-Key`):
+
+```bash
+curl -s -X POST http://localhost:8083/api/v1/settlements/batches \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: daily-2026-03-10" \
+  -H 'Content-Type: application/json' \
+  -d '{"businessDate": "2026-03-10"}'
+```
+
+Poll the batch and list its settlements:
+
+```bash
+curl -s http://localhost:8083/api/v1/settlements/batches/<batch-id> \
+  -H "Authorization: Bearer $TOKEN"
+
+curl -s "http://localhost:8083/api/v1/settlements/batches/<batch-id>/settlements?page=0&size=20" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+The settlement worker runs asynchronously on a bounded executor. Re-running a business date
+does not settle already-settled transactions; a new idempotency key creates a new batch that
+only picks up transactions still in `CAPTURED` state.
 
 Every response carries `X-Correlation-Id`; send your own value to propagate it through logs and
 problem responses.

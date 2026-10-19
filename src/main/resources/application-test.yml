@@ -13,6 +13,10 @@ app:
     password: test-admin-password
   pagination:
     max-page-size: 100
+  settlement:
+    core-pool-size: 2
+    max-pool-size: 4
+    queue-capacity: 20
 
 logging:
   level:

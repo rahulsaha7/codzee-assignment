@@ -45,7 +45,8 @@ class MerchantServiceTest {
                 new AppProperties(
                         new AppProperties.Jwt("test-secret", 3600),
                         new AppProperties.Admin("admin", "password"),
-                        new AppProperties.Pagination(MAX_PAGE_SIZE));
+                        new AppProperties.Pagination(MAX_PAGE_SIZE),
+                        new AppProperties.Settlement(4, 8, 100));
         merchantService = new MerchantService(merchantRepository, currentUserProvider, properties);
     }
 
