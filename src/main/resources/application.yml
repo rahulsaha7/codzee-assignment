@@ -48,6 +48,10 @@ app:
     password: ${APP_ADMIN_PASSWORD:}
   pagination:
     max-page-size: 100
+  settlement:
+    core-pool-size: ${APP_SETTLEMENT_CORE_POOL_SIZE:4}
+    max-pool-size: ${APP_SETTLEMENT_MAX_POOL_SIZE:8}
+    queue-capacity: ${APP_SETTLEMENT_QUEUE_CAPACITY:100}
 
 logging:
   pattern:
