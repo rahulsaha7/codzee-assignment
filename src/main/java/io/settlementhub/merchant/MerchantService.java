@@ -1,5 +1,6 @@
 package io.settlementhub.merchant;
 
+import io.settlementhub.common.audit.AuditService;
 import io.settlementhub.common.config.AppProperties;
 import io.settlementhub.common.error.ApiException;
 import io.settlementhub.common.error.ErrorCode;
@@ -7,13 +8,12 @@ import io.settlementhub.common.web.PageResponse;
 import io.settlementhub.common.web.Pagination;
 import io.settlementhub.merchant.dto.CreateMerchantRequest;
 import io.settlementhub.merchant.dto.MerchantResponse;
+import io.settlementhub.merchant.dto.MerchantSummaryResponse;
 import io.settlementhub.merchant.dto.UpdateMerchantStatusRequest;
 import io.settlementhub.merchant.mapper.MerchantMapper;
-import io.settlementhub.security.CurrentUser;
-import io.settlementhub.security.CurrentUserProvider;
+import io.settlementhub.transaction.TransactionRepository;
+import io.settlementhub.transaction.TransactionStatus;
 import java.util.UUID;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,15 +22,24 @@ import org.springframework.transaction.annotation.Transactional;
 public class MerchantService {
 
     private final MerchantRepository merchantRepository;
-    private final CurrentUserProvider currentUserProvider;
+    private final MerchantSearchRepository merchantSearchRepository;
+    private final TransactionRepository transactionRepository;
+    private final MerchantAccess merchantAccess;
+    private final AuditService auditService;
     private final int maxPageSize;
 
     public MerchantService(
             MerchantRepository merchantRepository,
-            CurrentUserProvider currentUserProvider,
+            MerchantSearchRepository merchantSearchRepository,
+            TransactionRepository transactionRepository,
+            MerchantAccess merchantAccess,
+            AuditService auditService,
             AppProperties appProperties) {
         this.merchantRepository = merchantRepository;
-        this.currentUserProvider = currentUserProvider;
+        this.merchantSearchRepository = merchantSearchRepository;
+        this.transactionRepository = transactionRepository;
+        this.merchantAccess = merchantAccess;
+        this.auditService = auditService;
         this.maxPageSize = appProperties.pagination().maxPageSize();
     }
 
@@ -48,37 +57,42 @@ public class MerchantService {
                         request.mdrBps(),
                         request.bankAccountRef(),
                         MerchantStatus.PENDING);
-        return MerchantMapper.toResponse(merchantRepository.save(merchant));
+        Merchant saved = merchantRepository.save(merchant);
+        auditService.merchantCreated(saved);
+        return MerchantMapper.toResponse(saved);
     }
 
     @Transactional(readOnly = true)
     public MerchantResponse get(UUID merchantId) {
-        CurrentUser currentUser = currentUserProvider.require();
-        if (!currentUser.canAccessMerchant(merchantId)) {
-            throw new ApiException(ErrorCode.FORBIDDEN, "You do not have access to this merchant.");
-        }
+        merchantAccess.requireAccess(merchantId);
         return MerchantMapper.toResponse(findMerchant(merchantId));
     }
 
     @Transactional(readOnly = true)
-    public PageResponse<MerchantResponse> list(MerchantStatus status, int page, int size) {
-        Pageable pageable =
-                Pagination.of(
-                        page,
-                        size,
-                        maxPageSize,
-                        Sort.by(Sort.Order.desc("createdAt"), Sort.Order.asc("legalName")));
-        Page<Merchant> merchants =
-                status == null
-                        ? merchantRepository.findAll(pageable)
-                        : merchantRepository.findByStatus(status, pageable);
-        return PageResponse.from(merchants.map(MerchantMapper::toResponse));
+    public PageResponse<MerchantResponse> search(
+            MerchantStatus status, String q, int page, int size) {
+        Pagination.of(page, size, maxPageSize, Sort.unsorted());
+        return merchantSearchRepository.search(status, q, page, size);
+    }
+
+    @Transactional(readOnly = true)
+    public MerchantSummaryResponse mySummary() {
+        UUID merchantId = merchantAccess.requireLinkedMerchantId();
+        Merchant merchant = findMerchant(merchantId);
+        return new MerchantSummaryResponse(
+                MerchantMapper.toResponse(merchant),
+                transactionRepository.countByMerchantIdAndStatus(
+                        merchantId, TransactionStatus.CAPTURED),
+                transactionRepository.countByMerchantIdAndStatus(
+                        merchantId, TransactionStatus.SETTLED));
     }
 
     @Transactional
     public MerchantResponse updateStatus(UUID merchantId, UpdateMerchantStatusRequest request) {
         Merchant merchant = findMerchant(merchantId);
+        MerchantStatus previousStatus = merchant.getStatus();
         merchant.changeStatus(request.status());
+        auditService.merchantStatusChanged(merchant, previousStatus);
         return MerchantMapper.toResponse(merchant);
     }
 

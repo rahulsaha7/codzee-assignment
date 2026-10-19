@@ -12,11 +12,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.settlementhub.common.error.ApiException;
+import io.settlementhub.common.error.ErrorCode;
 import io.settlementhub.common.web.PageResponse;
 import io.settlementhub.merchant.MerchantController;
 import io.settlementhub.merchant.MerchantService;
 import io.settlementhub.merchant.MerchantStatus;
 import io.settlementhub.merchant.dto.MerchantResponse;
+import io.settlementhub.merchant.dto.MerchantSummaryResponse;
 import io.settlementhub.merchant.dto.UpdateMerchantStatusRequest;
 import io.settlementhub.security.JwtAuthFilter;
 import io.settlementhub.security.JwtService;
@@ -48,18 +51,7 @@ class MerchantControllerWebMvcTest {
     @WithMockUser(roles = "OPS")
     void createsMerchant() throws Exception {
         UUID merchantId = UUID.randomUUID();
-        MerchantResponse response =
-                new MerchantResponse(
-                        merchantId,
-                        "Acme",
-                        "acme@example.com",
-                        "+1-555-0100",
-                        MerchantStatus.PENDING,
-                        150,
-                        "BANK-1",
-                        Instant.parse("2026-01-01T00:00:00Z"),
-                        Instant.parse("2026-01-01T00:00:00Z"),
-                        0);
+        MerchantResponse response = response(merchantId, "Acme", MerchantStatus.PENDING);
         when(merchantService.create(any())).thenReturn(response);
 
         mockMvc.perform(
@@ -131,48 +123,108 @@ class MerchantControllerWebMvcTest {
     }
 
     @Test
-    @WithMockUser(roles = "ADMIN")
-    void listsMerchants() throws Exception {
-        MerchantResponse merchant =
-                new MerchantResponse(
-                        UUID.randomUUID(),
-                        "Acme",
-                        "acme@example.com",
-                        null,
-                        MerchantStatus.ACTIVE,
-                        150,
-                        null,
-                        Instant.parse("2026-01-01T00:00:00Z"),
-                        Instant.parse("2026-01-01T00:00:00Z"),
-                        0);
-        when(merchantService.list(eq(MerchantStatus.ACTIVE), eq(0), eq(20)))
+    @WithMockUser(roles = "OPS")
+    void searchesMerchantsWithTextAndStatus() throws Exception {
+        MerchantResponse merchant = response(UUID.randomUUID(), "Acme", MerchantStatus.ACTIVE);
+        when(merchantService.search(eq(MerchantStatus.ACTIVE), eq("acme"), eq(0), eq(20)))
                 .thenReturn(new PageResponse<>(List.of(merchant), 0, 20, 1, 1));
 
-        mockMvc.perform(get("/api/v1/merchants").param("status", "ACTIVE"))
+        mockMvc.perform(get("/api/v1/merchants").param("status", "ACTIVE").param("q", "acme"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.items[0].id").value(merchant.id().toString()))
                 .andExpect(jsonPath("$.totalElements").value(1));
     }
 
     @Test
+    @WithMockUser(roles = "MERCHANT")
+    void merchantCanReadOwnMerchant() throws Exception {
+        UUID merchantId = UUID.randomUUID();
+        when(merchantService.get(merchantId))
+                .thenReturn(response(merchantId, "Acme", MerchantStatus.ACTIVE));
+
+        mockMvc.perform(get("/api/v1/merchants/{merchantId}", merchantId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(merchantId.toString()));
+    }
+
+    @Test
+    @WithMockUser(roles = "MERCHANT")
+    void forbidsMerchantFromReadingAnotherMerchant() throws Exception {
+        UUID merchantId = UUID.randomUUID();
+        when(merchantService.get(merchantId))
+                .thenThrow(
+                        new ApiException(
+                                ErrorCode.FORBIDDEN, "You do not have access to this merchant."));
+
+        mockMvc.perform(get("/api/v1/merchants/{merchantId}", merchantId))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("forbidden"));
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    void adminCanReadAnyMerchant() throws Exception {
+        UUID merchantId = UUID.randomUUID();
+        when(merchantService.get(merchantId))
+                .thenReturn(response(merchantId, "Acme", MerchantStatus.ACTIVE));
+
+        mockMvc.perform(get("/api/v1/merchants/{merchantId}", merchantId))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @WithMockUser(roles = "OPS")
+    void opsCanReadAnyMerchant() throws Exception {
+        UUID merchantId = UUID.randomUUID();
+        when(merchantService.get(merchantId))
+                .thenReturn(response(merchantId, "Acme", MerchantStatus.ACTIVE));
+
+        mockMvc.perform(get("/api/v1/merchants/{merchantId}", merchantId))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void requiresAuthenticationForMerchantRead() throws Exception {
+        mockMvc.perform(get("/api/v1/merchants/{merchantId}", UUID.randomUUID()))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @WithMockUser(roles = "MERCHANT")
+    void returnsMerchantSummary() throws Exception {
+        UUID merchantId = UUID.randomUUID();
+        when(merchantService.mySummary())
+                .thenReturn(
+                        new MerchantSummaryResponse(
+                                response(merchantId, "Acme", MerchantStatus.ACTIVE), 7, 3));
+
+        mockMvc.perform(get("/api/v1/merchants/me/summary"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.merchant.id").value(merchantId.toString()))
+                .andExpect(jsonPath("$.capturedTransactions").value(7))
+                .andExpect(jsonPath("$.settledTransactions").value(3));
+    }
+
+    @Test
+    @WithMockUser(roles = "ADMIN")
+    void forbidsAdminFromMerchantSummary() throws Exception {
+        mockMvc.perform(get("/api/v1/merchants/me/summary")).andExpect(status().isForbidden());
+
+        verifyNoInteractions(merchantService);
+    }
+
+    @Test
+    void requiresAuthenticationForMerchantSummary() throws Exception {
+        mockMvc.perform(get("/api/v1/merchants/me/summary")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
     @WithMockUser(roles = "ADMIN")
     void changesMerchantStatus() throws Exception {
         UUID merchantId = UUID.randomUUID();
-        MerchantResponse response =
-                new MerchantResponse(
-                        merchantId,
-                        "Acme",
-                        "acme@example.com",
-                        null,
-                        MerchantStatus.ACTIVE,
-                        150,
-                        null,
-                        Instant.parse("2026-01-01T00:00:00Z"),
-                        Instant.parse("2026-01-02T00:00:00Z"),
-                        1);
         when(merchantService.updateStatus(
                         eq(merchantId), eq(new UpdateMerchantStatusRequest(MerchantStatus.ACTIVE))))
-                .thenReturn(response);
+                .thenReturn(response(merchantId, "Acme", MerchantStatus.ACTIVE));
 
         mockMvc.perform(
                         patch("/api/v1/merchants/{merchantId}/status", merchantId)
@@ -183,5 +235,20 @@ class MerchantControllerWebMvcTest {
                                                         MerchantStatus.ACTIVE))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ACTIVE"));
+    }
+
+    private static MerchantResponse response(
+            UUID merchantId, String legalName, MerchantStatus status) {
+        return new MerchantResponse(
+                merchantId,
+                legalName,
+                "acme@example.com",
+                "+1-555-0100",
+                status,
+                150,
+                "BANK-1",
+                Instant.parse("2026-01-01T00:00:00Z"),
+                Instant.parse("2026-01-01T00:00:00Z"),
+                0);
     }
 }

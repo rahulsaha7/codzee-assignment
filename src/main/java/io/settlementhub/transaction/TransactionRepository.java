@@ -17,6 +17,8 @@ public interface TransactionRepository
 
     Optional<Transaction> findByMerchantIdAndExternalRef(UUID merchantId, String externalRef);
 
+    long countByMerchantIdAndStatus(UUID merchantId, TransactionStatus status);
+
     @Transactional
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query(

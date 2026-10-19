@@ -3,20 +3,26 @@ package io.settlementhub.merchant;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import io.settlementhub.common.audit.AuditService;
 import io.settlementhub.common.config.AppProperties;
 import io.settlementhub.common.error.ApiException;
 import io.settlementhub.common.error.ErrorCode;
 import io.settlementhub.common.web.PageResponse;
 import io.settlementhub.merchant.dto.CreateMerchantRequest;
 import io.settlementhub.merchant.dto.MerchantResponse;
+import io.settlementhub.merchant.dto.MerchantSummaryResponse;
 import io.settlementhub.merchant.dto.UpdateMerchantStatusRequest;
 import io.settlementhub.security.CurrentUser;
-import io.settlementhub.security.CurrentUserProvider;
 import io.settlementhub.security.Role;
+import io.settlementhub.transaction.TransactionRepository;
+import io.settlementhub.transaction.TransactionStatus;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -25,8 +31,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.test.util.ReflectionTestUtils;
 
 @ExtendWith(MockitoExtension.class)
@@ -35,7 +39,10 @@ class MerchantServiceTest {
     private static final int MAX_PAGE_SIZE = 100;
 
     @Mock private MerchantRepository merchantRepository;
-    @Mock private CurrentUserProvider currentUserProvider;
+    @Mock private MerchantSearchRepository merchantSearchRepository;
+    @Mock private TransactionRepository transactionRepository;
+    @Mock private MerchantAccess merchantAccess;
+    @Mock private AuditService auditService;
 
     private MerchantService merchantService;
 
@@ -47,7 +54,14 @@ class MerchantServiceTest {
                         new AppProperties.Admin("admin", "password"),
                         new AppProperties.Pagination(MAX_PAGE_SIZE),
                         new AppProperties.Settlement(4, 8, 100));
-        merchantService = new MerchantService(merchantRepository, currentUserProvider, properties);
+        merchantService =
+                new MerchantService(
+                        merchantRepository,
+                        merchantSearchRepository,
+                        transactionRepository,
+                        merchantAccess,
+                        auditService,
+                        properties);
     }
 
     @Test
@@ -69,6 +83,7 @@ class MerchantServiceTest {
         assertThat(response.legalName()).isEqualTo("Acme");
         assertThat(response.status()).isEqualTo(MerchantStatus.PENDING);
         assertThat(response.mdrBps()).isEqualTo(150);
+        verify(auditService).merchantCreated(any(Merchant.class));
     }
 
     @Test
@@ -83,26 +98,27 @@ class MerchantServiceTest {
                         exception ->
                                 assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.CONFLICT));
         verify(merchantRepository, never()).save(any());
+        verifyNoInteractions(auditService);
     }
 
     @Test
     void allowsMerchantToReadOwnRecord() {
         UUID merchantId = UUID.randomUUID();
         Merchant merchant = merchant(merchantId, MerchantStatus.ACTIVE);
-        when(currentUserProvider.require())
-                .thenReturn(new CurrentUser("merchant-user", Role.MERCHANT, merchantId));
         when(merchantRepository.findById(merchantId)).thenReturn(Optional.of(merchant));
 
         MerchantResponse response = merchantService.get(merchantId);
 
         assertThat(response.id()).isEqualTo(merchantId);
+        verify(merchantAccess).requireAccess(merchantId);
     }
 
     @Test
     void forbidsMerchantFromReadingAnotherMerchant() {
         UUID merchantId = UUID.randomUUID();
-        when(currentUserProvider.require())
-                .thenReturn(new CurrentUser("merchant-user", Role.MERCHANT, UUID.randomUUID()));
+        doThrow(new ApiException(ErrorCode.FORBIDDEN, "You do not have access to this merchant."))
+                .when(merchantAccess)
+                .requireAccess(merchantId);
 
         assertThatThrownBy(() -> merchantService.get(merchantId))
                 .isInstanceOfSatisfying(
@@ -117,22 +133,20 @@ class MerchantServiceTest {
     void allowsOpsToReadAnyMerchant() {
         UUID merchantId = UUID.randomUUID();
         Merchant merchant = merchant(merchantId, MerchantStatus.ACTIVE);
-        when(currentUserProvider.require()).thenReturn(new CurrentUser("ops-user", Role.OPS, null));
         when(merchantRepository.findById(merchantId)).thenReturn(Optional.of(merchant));
 
         assertThat(merchantService.get(merchantId).id()).isEqualTo(merchantId);
+        verify(merchantAccess).requireAccess(merchantId);
     }
 
     @Test
-    void listsMerchantsFilteredByStatus() {
-        Merchant merchant = merchant(UUID.randomUUID(), MerchantStatus.ACTIVE);
-        PageRequest pageable = PageRequest.of(0, 20);
-        when(merchantRepository.findByStatus(
-                        org.mockito.ArgumentMatchers.eq(MerchantStatus.ACTIVE), any()))
-                .thenReturn(new PageImpl<>(List.of(merchant), pageable, 1));
+    void searchesMerchantsWithTextAndStatusFilters() {
+        MerchantResponse merchant = response(UUID.randomUUID(), "Acme", "acme@example.com");
+        when(merchantSearchRepository.search(MerchantStatus.ACTIVE, "acme", 0, 20))
+                .thenReturn(new PageResponse<>(List.of(merchant), 0, 20, 1, 1));
 
         PageResponse<MerchantResponse> response =
-                merchantService.list(MerchantStatus.ACTIVE, 0, 20);
+                merchantService.search(MerchantStatus.ACTIVE, "acme", 0, 20);
 
         assertThat(response.items()).hasSize(1);
         assertThat(response.totalElements()).isEqualTo(1);
@@ -140,16 +154,17 @@ class MerchantServiceTest {
 
     @Test
     void rejectsPageSizeAboveCap() {
-        assertThatThrownBy(() -> merchantService.list(null, 0, MAX_PAGE_SIZE + 1))
+        assertThatThrownBy(() -> merchantService.search(null, null, 0, MAX_PAGE_SIZE + 1))
                 .isInstanceOfSatisfying(
                         ApiException.class,
                         exception ->
                                 assertThat(exception.getErrorCode())
                                         .isEqualTo(ErrorCode.BAD_REQUEST));
+        verifyNoInteractions(merchantSearchRepository);
     }
 
     @Test
-    void updatesMerchantStatus() {
+    void updatesMerchantStatusAndRecordsAudit() {
         UUID merchantId = UUID.randomUUID();
         Merchant merchant = merchant(merchantId, MerchantStatus.PENDING);
         when(merchantRepository.findById(merchantId)).thenReturn(Optional.of(merchant));
@@ -159,6 +174,7 @@ class MerchantServiceTest {
                         merchantId, new UpdateMerchantStatusRequest(MerchantStatus.SUSPENDED));
 
         assertThat(response.status()).isEqualTo(MerchantStatus.SUSPENDED);
+        verify(auditService).merchantStatusChanged(merchant, MerchantStatus.PENDING);
     }
 
     @Test
@@ -179,6 +195,42 @@ class MerchantServiceTest {
     }
 
     @Test
+    void returnsSummaryCountsForLinkedMerchant() {
+        UUID merchantId = UUID.randomUUID();
+        Merchant merchant = merchant(merchantId, MerchantStatus.ACTIVE);
+        when(merchantAccess.requireLinkedMerchantId()).thenReturn(merchantId);
+        when(merchantRepository.findById(merchantId)).thenReturn(Optional.of(merchant));
+        when(transactionRepository.countByMerchantIdAndStatus(
+                        merchantId, TransactionStatus.CAPTURED))
+                .thenReturn(4L);
+        when(transactionRepository.countByMerchantIdAndStatus(
+                        merchantId, TransactionStatus.SETTLED))
+                .thenReturn(3L);
+
+        MerchantSummaryResponse summary = merchantService.mySummary();
+
+        assertThat(summary.merchant().id()).isEqualTo(merchantId);
+        assertThat(summary.capturedTransactions()).isEqualTo(4);
+        assertThat(summary.settledTransactions()).isEqualTo(3);
+    }
+
+    @Test
+    void rejectsSummaryForUnlinkedAccount() {
+        when(merchantAccess.requireLinkedMerchantId())
+                .thenThrow(
+                        new ApiException(
+                                ErrorCode.FORBIDDEN, "This account is not linked to a merchant."));
+
+        assertThatThrownBy(() -> merchantService.mySummary())
+                .isInstanceOfSatisfying(
+                        ApiException.class,
+                        exception ->
+                                assertThat(exception.getErrorCode())
+                                        .isEqualTo(ErrorCode.FORBIDDEN));
+        verifyNoInteractions(transactionRepository);
+    }
+
+    @Test
     void merchantCannotAccessAnotherMerchantsTransactionsThroughOwnershipHelper() {
         UUID ownMerchantId = UUID.randomUUID();
         CurrentUser merchantUser = new CurrentUser("merchant-user", Role.MERCHANT, ownMerchantId);
@@ -192,5 +244,19 @@ class MerchantServiceTest {
         Merchant merchant = new Merchant("Acme", "acme@example.com", null, 150, null, status);
         ReflectionTestUtils.setField(merchant, "id", id);
         return merchant;
+    }
+
+    private static MerchantResponse response(UUID id, String legalName, String email) {
+        return new MerchantResponse(
+                id,
+                legalName,
+                email,
+                null,
+                MerchantStatus.ACTIVE,
+                150,
+                null,
+                Instant.parse("2026-01-01T00:00:00Z"),
+                Instant.parse("2026-01-01T00:00:00Z"),
+                0);
     }
 }

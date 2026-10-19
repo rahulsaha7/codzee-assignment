@@ -4,6 +4,7 @@ import io.settlementhub.common.config.OpenApiConfig;
 import io.settlementhub.common.web.PageResponse;
 import io.settlementhub.merchant.dto.CreateMerchantRequest;
 import io.settlementhub.merchant.dto.MerchantResponse;
+import io.settlementhub.merchant.dto.MerchantSummaryResponse;
 import io.settlementhub.merchant.dto.UpdateMerchantStatusRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -73,21 +74,38 @@ public class MerchantController {
         return merchantService.get(merchantId);
     }
 
+    @GetMapping(path = "/me/summary", produces = MediaType.APPLICATION_JSON_VALUE)
+    @PreAuthorize("hasRole('MERCHANT')")
+    @Operation(
+            summary = "Get the current merchant's summary",
+            description = "Returns the linked merchant profile and transaction counts.")
+    @ApiResponse(responseCode = "200", description = "Merchant summary")
+    @ApiResponse(
+            responseCode = "403",
+            description = "Account is not linked to a merchant",
+            content = @Content(schema = @Schema(implementation = ProblemDetail.class)))
+    public MerchantSummaryResponse mySummary() {
+        return merchantService.mySummary();
+    }
+
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     @PreAuthorize("hasAnyRole('ADMIN', 'OPS')")
     @Operation(
-            summary = "List merchants",
-            description = "Paginated merchant listing with an optional status filter.")
+            summary = "Search merchants",
+            description = "Paginated merchant search with optional status and free-text filters.")
     @ApiResponse(responseCode = "200", description = "Page of merchants")
     public PageResponse<MerchantResponse> list(
             @Parameter(description = "Optional merchant status filter")
                     @RequestParam(required = false)
                     MerchantStatus status,
+            @Parameter(description = "Optional legal name or business email search term")
+                    @RequestParam(required = false)
+                    String q,
             @Parameter(description = "Zero-based page index") @RequestParam(defaultValue = "0")
                     int page,
             @Parameter(description = "Page size, capped at 100") @RequestParam(defaultValue = "20")
                     int size) {
-        return merchantService.list(status, page, size);
+        return merchantService.search(status, q, page, size);
     }
 
     @PatchMapping(
