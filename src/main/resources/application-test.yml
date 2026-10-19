@@ -1,0 +1,24 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+
+app:
+  jwt:
+    secret: test-only-jwt-secret-change-me-at-least-32-bytes
+    ttl-seconds: 900
+  admin:
+    username: admin
+    password: test-admin-password
+  pagination:
+    max-page-size: 100
+  settlement:
+    core-pool-size: 2
+    max-pool-size: 4
+    queue-capacity: 20
+
+logging:
+  level:
+    io.settlementhub: WARN
+    org.testcontainers: INFO

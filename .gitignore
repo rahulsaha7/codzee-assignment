@@ -1,0 +1,27 @@
+### Environment and secrets ###
+.env
+*.env.local
+
+### Build output ###
+target/
+build/
+out/
+
+### IDE ###
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+### OS ###
+.DS_Store
+Thumbs.db
+
+### Logs ###
+*.log
+logs/
+
+### Review-tool evaluation ledger (kept outside the repository) ###
+codzee-flaws-ledger.md
+**/codzee-flaws-ledger.md
